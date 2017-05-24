@@ -17,6 +17,7 @@ import (
 type TDigest struct {
 	summary     *summary
 	compression float64
+	comp_thresh float64
 	count       uint32
 }
 
@@ -36,6 +37,7 @@ func New(compression float64) *TDigest {
 	}
 	return &TDigest{
 		compression: compression,
+		comp_thresh: 20 * compression,
 		summary:     newSummary(estimateCapacity(compression)),
 		count:       0,
 	}
@@ -118,10 +120,12 @@ func (t *TDigest) Add(value float64, count uint32) (err error) {
 			j = rand.Intn(len(candidates))
 		}
 		chosen := candidates[j]
+		ccount := chosen.count
 
 		quantile := t.computeCentroidQuantile(&chosen)
+		threshold := t.threshold(quantile)
 
-		if float64(chosen.count+count) > t.threshold(quantile) {
+		if float64(ccount+count) > threshold {
 			candidates = append(candidates[:j], candidates[j+1:]...)
 			continue
 		}
@@ -136,7 +140,7 @@ func (t *TDigest) Add(value float64, count uint32) (err error) {
 		t.count += count
 	}
 
-	if float64(t.summary.Len()) > 20*t.compression {
+	if float64(t.summary.Len()) > t.comp_thresh {
 		err = t.Compress()
 	}
 
@@ -201,8 +205,8 @@ func (t *TDigest) Len() int { return t.summary.Len() }
 // centroids have been iterated.
 func (t *TDigest) ForEachCentroid(f func(mean float64, count uint32) bool) {
 	s := t.summary
-	for i := 0; i < s.Len(); i++ {
-		if !f(s.keys[i], s.counts[i]) {
+	for i, key := range s.keys {
+		if !f(key, s.counts[i]) {
 			break
 		}
 	}

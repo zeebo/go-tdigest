@@ -411,6 +411,7 @@ func benchmarkAdd(compression float64, b *testing.B) {
 		data[n] = rand.Float64()
 	}
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for n := 0; n < b.N; n++ {
 		err := t.Add(data[n], 1)

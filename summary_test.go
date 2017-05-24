@@ -34,8 +34,8 @@ func TestBasics(t *testing.T) {
 }
 
 func checkSorted(s *summary, t *testing.T) {
-	if !sort.Float64sAreSorted(s.keys) {
-		t.Fatalf("Keys are not sorted! %v", s.keys)
+	if keys := s.keys; !sort.Float64sAreSorted(keys) {
+		t.Fatalf("Keys are not sorted! %v", keys)
 	}
 }
 
@@ -215,12 +215,10 @@ func TestCeilingAndFloor(t *testing.T) {
 }
 
 func TestAdjustLeftRight(t *testing.T) {
-
 	keys := []float64{1, 2, 3, 4, 9, 5, 6, 7, 8}
 	counts := []uint32{1, 2, 3, 4, 9, 5, 6, 7, 8}
 
 	s := summary{keys: keys, counts: counts}
-
 	s.adjustRight(4)
 
 	if !sort.Float64sAreSorted(s.keys) || s.counts[4] != 5 {
