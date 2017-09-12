@@ -4,22 +4,20 @@ import (
 	"fmt"
 	"math"
 	"sort"
-
-	"github.com/yourbasic/fenwick"
 )
 
 type summary struct {
 	means  []float64
 	counts []uint32
-	bitree *fenwick.List
+	bitree fen
 }
 
 func newSummary(initialCapacity uint) *summary {
 	s := &summary{
 		means:  make([]float64, 0, initialCapacity),
 		counts: make([]uint32, 0, initialCapacity),
+		bitree: fen{buf: make([]uint32, initialCapacity)},
 	}
-	s.rebuildFenwickTree()
 	return s
 }
 
@@ -28,7 +26,6 @@ func (s summary) Len() int {
 }
 
 func (s *summary) Add(key float64, value uint32) error {
-
 	if math.IsNaN(key) {
 		return fmt.Errorf("Key must not be NaN")
 	}
@@ -39,34 +36,38 @@ func (s *summary) Add(key float64, value uint32) error {
 
 	idx := s.FindInsertionIndex(key)
 
-	s.means = append(s.means, math.NaN())
-	s.counts = append(s.counts, 0)
-
+	s.means = append(s.means, 0)
 	copy(s.means[idx+1:], s.means[idx:])
+
+	s.counts = append(s.counts, 0)
 	copy(s.counts[idx+1:], s.counts[idx:])
+
+	// man i wish there was a better way to handle an insertion, but Add
+	// appears to happen far less than UpdateAt, and when Add does happen,
+	// the size of keycounts is small. There may be some optimization here
+	// by doing deltas, though.
+	for i := idx + 1; i < len(s.means); i++ {
+		s.bitree.Set(i, s.counts[i])
+	}
 
 	s.means[idx] = key
 	s.counts[idx] = value
-
-	// Reinitialize the prefixSum cache
-	// we can likely be smarter when doing this
-	s.rebuildFenwickTree()
+	s.bitree.Set(idx, value)
 
 	return nil
 }
 
-func (s *summary) rebuildFenwickTree() {
-	x := make([]int64, s.Len())
-	for i := 0; i < s.Len(); i++ {
-		x[i] = int64(s.counts[i])
-	}
-	s.bitree = fenwick.New(x...)
-}
-
 func (s summary) Floor(x float64) int {
-	return sort.Search(len(s.means), func(i int) bool {
-		return s.means[i] >= x
-	}) - 1
+	i, j := 0, len(s.means)
+	for i < j {
+		h := int(uint(i+j) >> 1)
+		if s.means[h] < x {
+			i = h + 1
+		} else {
+			j = h
+		}
+	}
+	return i - 1
 }
 
 // Always insert to the right
@@ -124,7 +125,7 @@ func (s *summary) setAt(index int, mean float64, count uint32) {
 	s.counts[index] = count
 	s.adjustRight(index)
 	s.adjustLeft(index)
-	s.bitree.Set(index, int64(count))
+	s.bitree.Set(index, count)
 }
 
 func (s *summary) adjustRight(index int) {
@@ -153,5 +154,6 @@ func (s summary) Clone() *summary {
 	return &summary{
 		means:  append([]float64{}, s.means...),
 		counts: append([]uint32{}, s.counts...),
+		bitree: s.bitree.Clone(),
 	}
 }

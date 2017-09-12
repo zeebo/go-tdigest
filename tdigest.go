@@ -23,6 +23,7 @@ package tdigest
 import (
 	"fmt"
 	"math"
+	"math/rand"
 )
 
 // TDigest is a quantile approximation data structure.
@@ -30,31 +31,16 @@ type TDigest struct {
 	summary     *summary
 	compression float64
 	count       uint64
-	rng         RNG
+	pcg         pcg
 }
 
 // New creates a new digest.
-//
-// By default the digest is constructed with a configuration that
-// should be useful for most use-cases. It comes with compression
-// set to 100 and uses the global random number generator (same
-// as using math/rand top-level functions).
-func New(options ...tdigestOption) (*TDigest, error) {
-	tdigest := &TDigest{
-		compression: 100,
+func New(compression float64) *TDigest {
+	return &TDigest{
+		compression: compression,
 		count:       0,
-		rng:         &globalRNG{},
+		summary:     newSummary(estimateCapacity(compression)),
 	}
-
-	for _, option := range options {
-		err := option(tdigest)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	tdigest.summary = newSummary(estimateCapacity(tdigest.compression))
-	return tdigest, nil
 }
 
 func _quantile(index float64, previousIndex float64, nextIndex float64, previousMean float64, nextMean float64) float64 {
@@ -217,7 +203,7 @@ func (t *TDigest) Compress() (err error) {
 	t.summary = newSummary(uint(t.summary.Len()))
 	t.count = 0
 
-	shuffle(oldTree.means, oldTree.counts, t.rng)
+	shuffle(oldTree.means, oldTree.counts)
 	oldTree.ForEach(func(mean float64, count uint32) bool {
 		err = t.AddWeighted(mean, count)
 		return err == nil
@@ -239,7 +225,7 @@ func (t *TDigest) Merge(other *TDigest) (err error) {
 
 	// We must keep the other digest intact
 	data := other.summary.Clone()
-	shuffle(data.means, data.counts, t.rng)
+	shuffle(data.means, data.counts)
 
 	data.ForEach(func(mean float64, count uint32) bool {
 		err = t.AddWeighted(mean, count)
@@ -285,7 +271,7 @@ func (t *TDigest) CDF(value float64) float64 {
 	aMean := t.summary.Mean(aIdx)
 	if value < aMean+right {
 		aCount := float64(t.summary.Count(aIdx))
-		return (tot + aCount*interpolate(value, aMean-left, aMean+right)) / 2
+		return (tot + aCount*interpolate(value, aMean-left, aMean+right)) / float64(t.Count())
 	}
 	return 1
 }
@@ -321,7 +307,7 @@ func (t TDigest) findNeighbors(start int, value float64) (int, int) {
 func (t TDigest) chooseMergeCandidate(begin, end int, value float64, count uint32) int {
 	closest := t.summary.Len()
 	sum := t.summary.HeadSum(begin)
-	var n float32
+	var n int
 
 	for neighbor := begin; neighbor != end; neighbor++ {
 		c := float64(t.summary.Count(neighbor))
@@ -335,7 +321,7 @@ func (t TDigest) chooseMergeCandidate(begin, end int, value float64, count uint3
 
 		if c+float64(count) <= k {
 			n++
-			if t.rng.Float32() < 1/n {
+			if fastMod(t.pcg.Uint32(), n) == 0 {
 				closest = neighbor
 			}
 		}
@@ -344,9 +330,9 @@ func (t TDigest) chooseMergeCandidate(begin, end int, value float64, count uint3
 	return closest
 }
 
-func shuffle(means []float64, counts []uint32, rng RNG) {
+func shuffle(means []float64, counts []uint32) {
 	for i := len(means) - 1; i > 1; i-- {
-		j := rng.Intn(i + 1)
+		j := rand.Intn(i + 1)
 		means[i], means[j], counts[i], counts[j] = means[j], means[i], counts[j], counts[i]
 	}
 }

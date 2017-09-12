@@ -1,110 +1,84 @@
 package tdigest
 
 import (
-	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 )
 
 const smallEncoding int32 = 2
 
-var endianess = binary.BigEndian
+// Marshal serializes the digest into a byte array so it can be
+// saved to disk or sent over the wire. buf is used as a backing array, but
+// the returned array may be different if it does not fit.
+func (t TDigest) Marshal(buf []byte) []byte {
+	var scratch [8]byte
 
-// AsBytes serializes the digest into a byte array so it can be
-// saved to disk or sent over the wire.
-func (t TDigest) AsBytes() ([]byte, error) {
-	buffer := new(bytes.Buffer)
+	binary.BigEndian.PutUint32(scratch[:], uint32(smallEncoding))
+	buf = append(buf, scratch[:4]...)
 
-	err := binary.Write(buffer, endianess, smallEncoding)
+	binary.BigEndian.PutUint64(scratch[:], math.Float64bits(t.compression))
+	buf = append(buf, scratch[:8]...)
 
-	if err != nil {
-		return nil, err
-	}
-
-	err = binary.Write(buffer, endianess, t.compression)
-
-	if err != nil {
-		return nil, err
-	}
-
-	err = binary.Write(buffer, endianess, int32(t.summary.Len()))
-
-	if err != nil {
-		return nil, err
-	}
+	binary.BigEndian.PutUint32(scratch[:], uint32(t.summary.Len()))
+	buf = append(buf, scratch[:4]...)
 
 	var x float64
 	t.summary.ForEach(func(mean float64, count uint32) bool {
 		delta := mean - x
 		x = mean
-		err = binary.Write(buffer, endianess, float32(delta))
 
-		return err == nil
+		var scratch [4]byte
+		binary.BigEndian.PutUint32(scratch[:], math.Float32bits(float32(delta)))
+		buf = append(buf, scratch[:4]...)
+
+		return true
 	})
-	if err != nil {
-		return nil, err
-	}
 
 	t.summary.ForEach(func(mean float64, count uint32) bool {
-		err = encodeUint(buffer, count)
-		return err == nil
+		buf = encodeUint32(buf, count)
+		return true
 	})
-	if err != nil {
-		return nil, err
-	}
 
-	return buffer.Bytes(), nil
+	return buf
 }
 
-// FromBytes reads a byte buffer with a serialized digest (from AsBytes)
-// and deserializes it.
-func FromBytes(buf *bytes.Reader) (*TDigest, error) {
-	var encoding int32
-	err := binary.Read(buf, endianess, &encoding)
-	if err != nil {
-		return nil, err
-	}
+// and deserializes it. It will panic if the byte slice is not large enough to
+// decode.
+func FromBytes(buf []byte) (t *TDigest, err error) {
+	encoding := int32(binary.BigEndian.Uint32(buf))
+	buf = buf[4:]
 
 	if encoding != smallEncoding {
 		return nil, fmt.Errorf("Unsupported encoding version: %d", encoding)
 	}
 
-	var compression float64
-	err = binary.Read(buf, endianess, &compression)
-	if err != nil {
-		return nil, err
-	}
+	compression := math.Float64frombits(binary.BigEndian.Uint64(buf))
+	buf = buf[8:]
 
-	t, err := New(Compression(uint32(compression)))
-	if err != nil {
-		return nil, err
-	}
+	t = New(compression)
 
-	var numCentroids int32
-	err = binary.Read(buf, endianess, &numCentroids)
-	if err != nil {
-		return nil, err
-	}
+	numCentroids := int32(binary.BigEndian.Uint32(buf))
+	buf = buf[4:]
 
 	if numCentroids < 0 || numCentroids > 1<<22 {
 		return nil, errors.New("bad number of centroids in serialization")
 	}
 
 	means := make([]float64, numCentroids)
-	var delta float32
 	var x float64
 	for i := 0; i < int(numCentroids); i++ {
-		err = binary.Read(buf, endianess, &delta)
-		if err != nil {
-			return nil, err
-		}
-		x += float64(delta)
+		delta := float64(math.Float32frombits(binary.BigEndian.Uint32(buf)))
+		buf = buf[4:]
+
+		x += delta
 		means[i] = x
 	}
 
 	for i := 0; i < int(numCentroids); i++ {
-		decUint, err := decodeUint(buf)
+		var decUint uint32
+		decUint, buf, err = decodeUint32(buf)
 		if err != nil {
 			return nil, err
 		}
@@ -118,20 +92,16 @@ func FromBytes(buf *bytes.Reader) (*TDigest, error) {
 	return t, nil
 }
 
-func encodeUint(buf *bytes.Buffer, n uint32) error {
+func encodeUint32(buf []byte, n uint32) []byte {
 	var b [binary.MaxVarintLen32]byte
-
 	l := binary.PutUvarint(b[:], uint64(n))
-
-	_, err := buf.Write(b[:l])
-
-	return err
+	return append(buf, b[:l]...)
 }
 
-func decodeUint(buf *bytes.Reader) (uint32, error) {
-	v, err := binary.ReadUvarint(buf)
+func decodeUint32(buf []byte) (uint32, []byte, error) {
+	v, n := binary.Uvarint(buf)
 	if v > 0xffffffff {
-		return 0, errors.New("Something wrong, this number looks too big")
+		return 0, nil, fmt.Errorf("value too large: %d", v)
 	}
-	return uint32(v), err
+	return uint32(v), buf[n:], nil
 }

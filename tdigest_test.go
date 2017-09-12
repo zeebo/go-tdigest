@@ -5,18 +5,10 @@ import (
 	"math/rand"
 	"sort"
 	"testing"
-
-	"github.com/leesper/go_rng"
+	"time"
 )
 
-func init() {
-	rand.Seed(0xDEADBEE)
-}
-
-func uncheckedNew(options ...tdigestOption) *TDigest {
-	t, _ := New(options...)
-	return t
-}
+func init() { rand.Seed(time.Now().UnixNano()) }
 
 // Test of tdigest internals and accuracy. Note no t.Parallel():
 // during tests the default random seed is consistent, but varying
@@ -25,7 +17,7 @@ func uncheckedNew(options ...tdigestOption) *TDigest {
 // for all tests. So, no test concurrency here.
 
 func TestTInternals(t *testing.T) {
-	tdigest := uncheckedNew()
+	tdigest := New(100)
 
 	if !math.IsNaN(tdigest.Quantile(0.1)) {
 		t.Errorf("Quantile() on an empty digest should return NaN. Got: %.4f", tdigest.Quantile(0.1))
@@ -78,7 +70,7 @@ func assertDifferenceSmallerThan(tdigest *TDigest, p float64, m float64, t *test
 }
 
 func TestUniformDistribution(t *testing.T) {
-	tdigest := uncheckedNew()
+	tdigest := New(100)
 
 	for i := 0; i < 100000; i++ {
 		_ = tdigest.Add(rand.Float64())
@@ -106,7 +98,7 @@ func assertDifferenceFromQuantile(data []float64, tdigest *TDigest, p float64, m
 }
 
 func TestSequentialInsertion(t *testing.T) {
-	tdigest := uncheckedNew()
+	tdigest := New(100)
 
 	data := make([]float64, 10000)
 	for i := 0; i < len(data); i++ {
@@ -129,7 +121,7 @@ func TestSequentialInsertion(t *testing.T) {
 }
 
 func TestNonSequentialInsertion(t *testing.T) {
-	tdigest := uncheckedNew()
+	tdigest := New(100)
 
 	// Not quite a uniform distribution, but close.
 	data := make([]float64, 1000)
@@ -169,7 +161,7 @@ func TestNonSequentialInsertion(t *testing.T) {
 }
 
 func TestSingletonInACrowd(t *testing.T) {
-	tdigest := uncheckedNew()
+	tdigest := New(100)
 	for i := 0; i < 10000; i++ {
 		_ = tdigest.Add(10)
 	}
@@ -195,7 +187,7 @@ func TestSingletonInACrowd(t *testing.T) {
 }
 
 func TestRespectBounds(t *testing.T) {
-	tdigest := uncheckedNew(Compression(10))
+	tdigest := New(10)
 
 	data := []float64{0, 279, 2, 281}
 	for _, f := range data {
@@ -215,7 +207,7 @@ func TestRespectBounds(t *testing.T) {
 }
 
 func TestWeights(t *testing.T) {
-	tdigest := uncheckedNew(Compression(10))
+	tdigest := New(10)
 
 	// Create data slice with repeats matching weights we gave to tdigest
 	data := []float64{}
@@ -239,7 +231,7 @@ func TestWeights(t *testing.T) {
 }
 
 func TestIntegers(t *testing.T) {
-	tdigest := uncheckedNew()
+	tdigest := New(100)
 
 	_ = tdigest.Add(1)
 	_ = tdigest.Add(2)
@@ -249,7 +241,7 @@ func TestIntegers(t *testing.T) {
 		t.Errorf("Expected p(0.5) = 2, Got %.2f instead", tdigest.Quantile(0.5))
 	}
 
-	tdigest = uncheckedNew()
+	tdigest = New(100)
 
 	for _, i := range []float64{1, 2, 2, 2, 2, 2, 2, 2, 3} {
 		_ = tdigest.Add(i)
@@ -308,10 +300,10 @@ func TestMerge(t *testing.T) {
 
 		subs := make([]*TDigest, numSubs)
 		for i := 0; i < numSubs; i++ {
-			subs[i] = uncheckedNew()
+			subs[i] = New(100)
 		}
 
-		dist := uncheckedNew()
+		dist := New(100)
 		for i := 0; i < numItems; i++ {
 			num := rand.Float64()
 
@@ -322,7 +314,7 @@ func TestMerge(t *testing.T) {
 
 		_ = dist.Compress()
 
-		dist2 := uncheckedNew()
+		dist2 := New(100)
 		for i := 0; i < numSubs; i++ {
 			_ = dist2.Merge(subs[i])
 		}
@@ -372,7 +364,7 @@ func TestMerge(t *testing.T) {
 }
 
 func TestCompressDoesntChangeCount(t *testing.T) {
-	tdigest := uncheckedNew()
+	tdigest := New(100)
 
 	for i := 0; i < 1000; i++ {
 		_ = tdigest.Add(rand.Float64())
@@ -390,56 +382,6 @@ func TestCompressDoesntChangeCount(t *testing.T) {
 	}
 }
 
-func TestGammaDistribution(t *testing.T) {
-	const numItems = 100000
-
-	digest := uncheckedNew()
-	gammaRNG := rng.NewGammaGenerator(0xDEADBEE)
-
-	data := make([]float64, numItems)
-	for i := 0; i < numItems; i++ {
-		data[i] = gammaRNG.Gamma(0.1, 0.1)
-		_ = digest.Add(data[i])
-	}
-
-	sort.Float64s(data)
-
-	softErrors := 0
-	for _, q := range []float64{0.001, 0.01, 0.1, 0.5, 0.9, 0.99, 0.999} {
-
-		ix := float64(len(data))*q - 0.5
-		index := int(math.Floor(ix))
-		p := ix - float64(index)
-		realQuantile := data[index]*(1-p) + data[index+1]*p
-
-		// estimated cdf of real quantile(x)
-		if math.Abs(digest.CDF(realQuantile)-q) > 0.005 {
-			t.Errorf("Error in estimated CDF too high")
-		}
-
-		// real cdf of estimated quantile(x)
-		error := math.Abs(q - cdf(digest.Quantile(q), data))
-		if error > 0.005 {
-			softErrors++
-		}
-
-		if error > 0.012 {
-			t.Errorf("Error in estimated Quantile too high")
-		}
-	}
-
-	if softErrors >= 3 {
-		t.Errorf("Too many soft errors")
-	}
-
-	// Issue #17, verify that we are hitting the extreme CDF case
-	// XXX Maybe test this properly instead of having a hardcoded value
-	extreme := digest.CDF(0.71875)
-	if !closeEnough(extreme, 1) {
-		t.Errorf("Expected something close to 1 but got %.4f instead", extreme)
-	}
-}
-
 func shouldPanic(f func(), t *testing.T, message string) {
 	defer func() {
 		tryRecover := recover()
@@ -451,7 +393,7 @@ func shouldPanic(f func(), t *testing.T, message string) {
 }
 
 func TestPanic(t *testing.T) {
-	tdigest := uncheckedNew()
+	tdigest := New(100)
 
 	shouldPanic(func() {
 		tdigest.Quantile(-42)
@@ -463,7 +405,7 @@ func TestPanic(t *testing.T) {
 }
 
 func TestForEachCentroid(t *testing.T) {
-	tdigest := uncheckedNew(Compression(10))
+	tdigest := New(10)
 
 	for i := 0; i < 100; i++ {
 		_ = tdigest.Add(float64(i))
@@ -490,8 +432,8 @@ func TestForEachCentroid(t *testing.T) {
 	}
 }
 
-func benchmarkAdd(compression uint32, b *testing.B) {
-	t := uncheckedNew(Compression(compression))
+func benchmarkAdd(compression float64, b *testing.B) {
+	t := New(compression)
 
 	data := make([]float64, b.N)
 	for n := 0; n < b.N; n++ {
